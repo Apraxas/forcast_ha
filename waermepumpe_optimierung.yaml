@@ -1,0 +1,122 @@
+blueprint:
+  name: "Wärmepumpen-Optimierung 24h (PV + Wetter)"
+  description: >
+    Berechnet automatisch eine stündliche Bewertung (1–6), wann die Wärmepumpe optimal laufen sollte –
+    basierend auf PV-Prognose und Wettervorhersage (Temperatur & Regen). 
+    Erstellt einen Sensor mit Score + Detailwerten für 24 Stunden.
+
+  domain: automation
+  author: me and ChatGPT
+  input:
+    weather_entity:
+      name: Wetter-Entity
+      description: Entity mit Vorhersagedaten (z. B. weather.forecast_home)
+      selector:
+        entity:
+          domain: weather
+
+    pv_now:
+      name: PV-Leistung jetzt
+      description: Sensor für aktuelle PV-Erzeugung (z. B. sensor.power_production_now_2)
+      selector:
+        entity:
+
+    pv_next_hour:
+      name: PV-Leistung nächste Stunde
+      description: PV-Vorhersage in 1 Stunde (z. B. sensor.power_production_next_hour_2)
+      selector:
+        entity:
+
+    pv_next_12h:
+      name: PV-Leistung in 12 Stunden
+      description: PV-Vorhersage in 12 Stunden (z. B. sensor.power_production_next_12hours_2)
+      selector:
+        entity:
+
+    pv_next_24h:
+      name: PV-Leistung in 24 Stunden
+      description: PV-Vorhersage in 24 Stunden (z. B. sensor.power_production_next_24hours_2)
+      selector:
+        entity:
+
+    pump_switch:
+      name: Wärmepumpen-Schalter
+      description: Optionaler Switch, der automatisch aktiviert/deaktiviert wird
+      default: ""
+      selector:
+        entity:
+          domain: switch
+
+mode: restart
+trigger:
+  - platform: time_pattern
+    hours: "/1"
+
+variables:
+  weather: !input weather_entity
+  pv_now: !input pv_now
+  pv_next_hour: !input pv_next_hour
+  pv_next_12h: !input pv_next_12h
+  pv_next_24h: !input pv_next_24h
+  pump_switch: !input pump_switch
+
+action:
+  - variables:
+      forecast: "{{ state_attr(weather, 'forecast') }}"
+      now: "{{ now() }}"
+      pv_now_val: "{{ states(pv_now) | float(0) }}"
+      pv_next_val: "{{ states(pv_next_hour) | float(0) }}"
+      pv_12h_val: "{{ states(pv_next_12h) | float(0) }}"
+      pv_24h_val: "{{ states(pv_next_24h) | float(0) }}"
+      pv_max: "{{ [pv_now_val, pv_next_val, pv_12h_val, pv_24h_val] | max }}"
+
+  - variables:
+      scores: >
+        {% set s = [] %}
+        {% set hour = 0 %}
+        {% for e in forecast if as_datetime(e.datetime) >= now and as_datetime(e.datetime) <= now + timedelta(hours=24) %}
+          {% set temp = e.temperature | float(10) %}
+          {% set rain = (e.precipitation_probability | float(0)) / 100 %}
+          {% set pv_factor = ((pv_now_val + (pv_next_val - pv_now_val) * (hour / 24))) / (pv_max + 0.01) %}
+          {% set pv_score = pv_factor * 3 %}
+          {% set temp_score = ((20 - abs(temp - 12)) / 20 * 2) | max(0) %}
+          {% set rain_score = (1 - rain) * 1 %}
+          {% set total = pv_score + temp_score + rain_score %}
+          {% set s = s + [ {"hour": hour, "score": total|round(2), "temp": temp, "rain": rain} ] %}
+          {% set hour = hour + 1 %}
+        {% endfor %}
+        {{ s }}
+      avg_score: >
+        {% if scores | length > 0 %}
+          {{ (scores | map(attribute='score') | list | average) | round(2) }}
+        {% else %}
+          0
+        {% endif %}
+
+  # → Sensor-Update in Home Assistant
+  - service: input_text.set_value
+    data:
+      entity_id: input_text.waermepumpe_score_json
+      value: "{{ scores | to_json }}"
+
+  - service: input_number.set_value
+    data:
+      entity_id: input_number.waermepumpe_score
+      value: "{{ avg_score }}"
+
+  # → Optional: Wärmepumpe steuern
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ pump_switch != '' and avg_score | float(0) >= 4.5 }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ pump_switch }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ pump_switch != '' and avg_score | float(0) <= 3.0 }}"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ pump_switch }}"
