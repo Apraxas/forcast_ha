@@ -92,31 +92,3 @@ action:
         {% else %}
           0
         {% endif %}
-
-  # → Sensor-Update in Home Assistant
-  - service: input_text.set_value
-    data:
-      entity_id: input_text.waermepumpe_score_json
-      value: "{{ scores | to_json }}"
-
-  - service: input_number.set_value
-    data:
-      entity_id: input_number.waermepumpe_score
-      value: "{{ avg_score }}"
-
-  # → Optional: Wärmepumpe steuern
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ pump_switch != '' and avg_score | float(0) >= 4.5 }}"
-        sequence:
-          - service: switch.turn_on
-            target:
-              entity_id: "{{ pump_switch }}"
-      - conditions:
-          - condition: template
-            value_template: "{{ pump_switch != '' and avg_score | float(0) <= 3.0 }}"
-        sequence:
-          - service: switch.turn_off
-            target:
-              entity_id: "{{ pump_switch }}"
